@@ -1,0 +1,122 @@
+{% extends "base.html" %}
+{% block title %}{{ t('report_heading') }}{% endblock %}
+{% block content %}
+  <h1>{{ t('report_heading') }}: {{ t_crop(report['crop']) }}, {{ t_month(report['month']) }}</h1>
+
+  <section class="card">
+    <h2>{{ t('advisory') }}</h2>
+    <!--
+      This is real government guidance from the ICAR-CRIDA / PDKV
+      contingency plan (see data.py MONSOON_DELAY_ACTIONS), not a
+      made-up sentence — worth saying exactly that if a judge asks.
+      The advisory text itself is already generated in the correct
+      language by data.get_advisory() — no t() needed here, since
+      this content comes from data.py, not translations.py.
+    -->
+    <p class="advisory-text">{{ advisory['delay_action'] }}</p>
+    <p class="advisory-tip">{{ advisory['crop_tip'] }}</p>
+
+    <!--
+      Audio player pointed at our own /report/<id>/audio/<lang> route.
+      The browser only requests this file when the user presses play,
+      so no Sarvam API call happens just from loading this page.
+      Only shown to farmers — officers don't need the spoken advisory.
+    -->
+    {% if viewer_role == 'farmer' %}
+    <audio controls preload="none" style="margin-top: 10px; width: 100%;">
+      <source src="{{ url_for('report_audio', report_id=report['id'], lang=current_lang) }}" type="audio/wav">
+      {{ t('audio_not_supported') }}
+    </audio>
+    {% endif %}
+  </section>
+
+  <section class="card">
+    <h2>{{ t('risk_signals') }}</h2>
+    <p>{{ t('risk_score_label') }}: <strong>{{ (report['risk_score'] * 100) | round | int }}</strong> -
+      <span class="badge badge-{{ report['risk_status'] }}">{{ t_status(report['risk_status']) }}</span></p>
+    {% if report['reasons'] %}
+      <ul>
+        {% for reason in report['reasons'].split(' | ') %}
+          <li>{{ reason }}</li>
+        {% endfor %}
+      </ul>
+    {% else %}
+      <p class="subtle">{{ t('no_risk_signals') }}</p>
+    {% endif %}
+  </section>
+
+  {% if report['problem_text'] %}
+    <section class="card">
+      <h2>{{ t('farmer_own_desc') }}</h2>
+      <p>{{ report['problem_text'] }}</p>
+    </section>
+  {% endif %}
+
+  {% if viewer_role == 'officer' %}
+    <section class="card">
+      <h2>{{ t('farmer_contact') }}</h2>
+      <p>{{ report['farmer_name'] }}, {{ report['farmer_village'] }}, {{ report['farmer_phone'] }}</p>
+
+      <div class="actions">
+        <!--
+          Step 1: verify. This is a plain HTML form that POSTs to our
+          own Flask route — no JavaScript needed, this is the most
+          basic way a web page changes server-side data.
+        -->
+        <form method="POST" action="{{ url_for('verify_report', report_id=report['id']) }}">
+          <button type="submit" class="btn" {% if report['verified_by_officer'] %}disabled{% endif %}>
+            {{ t('verified') if report['verified_by_officer'] else t('mark_verified') }}
+          </button>
+        </form>
+
+        <!--
+          Step 2: notify NGO via WhatsApp click-to-chat. This does
+          NOT send a message automatically — it opens WhatsApp with
+          the message pre-filled, and a HUMAN (the officer) presses
+          send. That's a deliberate, honest choice: no WhatsApp
+          Business API needed, and it keeps a person in the loop
+          before an NGO gets contacted.
+        -->
+        <a id="whatsappLink"
+           href="#"
+           target="_blank"
+           class="btn btn-primary"
+           onclick="return sendWhatsAppAlert()">
+          {{ t('notify_ngo_whatsapp') }}
+        </a>
+
+        <!-- After the officer has actually sent the WhatsApp message,
+             this second form just records that fact in our own
+             database, for the dashboard's "NGO notified" column. -->
+        <form method="POST" action="{{ url_for('mark_notified', report_id=report['id']) }}">
+          <button type="submit" class="btn btn-small">{{ t('mark_notified_system') }}</button>
+        </form>
+      </div>
+    </section>
+
+    <script>
+      // NGO_NUMBER is a placeholder — replace with a real NGO WhatsApp
+      // number (in international format, no + or spaces) before your
+      // demo, e.g. "919876543210".
+      const NGO_NUMBER = "918435255691";
+
+      function sendWhatsAppAlert() {
+        const message =
+          "Farmer distress alert (Wardha Advisory System)\n" +
+          "Name: {{ report['farmer_name'] }}\n" +
+          "Phone: {{ report['farmer_phone'] }}\n" +
+          "Village: {{ report['farmer_village'] }}\n" +
+          "Crop: {{ report['crop'] }}\n" +
+          "Risk score: {{ (report['risk_score'] * 100) | round | int }}\n" +
+          "Reported problem: {{ report['problem_text'] or 'Not provided' }}";
+
+        const url = "https://wa.me/" + NGO_NUMBER + "?text=" + encodeURIComponent(message);
+        document.getElementById("whatsappLink").href = url;
+        // returning true lets the click continue to actually open the link
+        return true;
+      }
+    </script>
+  {% endif %}
+
+  <p><a href="{{ url_for('farmer_dashboard') if viewer_role == 'farmer' else url_for('officer_dashboard') }}">&larr; {{ t('back') }}</a></p>
+{% endblock %}

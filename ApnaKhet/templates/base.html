@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% block title %}Smart Crop Advisory{% endblock %}</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  {% block head %}{% endblock %}
+</head>
+<body>
+  <header class="topbar">
+    <a href="{{ url_for('home') }}" class="brand">Wardha</a>
+    <nav>
+      <span class="lang-switch">
+        {% for code, name in language_names.items() %}
+          <a href="{{ url_for('set_language', lang=code) }}"
+             class="{{ 'lang-active' if current_lang == code else '' }}">{{ name }}</a>
+        {% endfor %}
+      </span>
+
+      {% if session.get('user_id') %}
+        <span class="user-greeting">Welcome, {{ user.full_name if user else '' }}</span>
+        <a href="{{ url_for('logout') }}" class="nav-btn">{{ t('log_out') }}</a>
+      {% else %}
+        <a href="{{ url_for('login', role='farmer') }}" class="nav-btn nav-btn-farmer">{{ t('login_as_farmer') }}</a>
+        <a href="{{ url_for('login', role='officer') }}" class="nav-btn nav-btn-officer">{{ t('login_as_officer') }}</a>
+      {% endif %}
+    </nav>
+  </header>
+
+  <main class="page">
+    {% with messages = get_flashed_messages() %}
+      {% if messages %}
+        <div class="flash">
+          {% for message in messages %}
+            <p>{{ message }}</p>
+          {% endfor %}
+        </div>
+      {% endif %}
+    {% endwith %}
+
+    {% block content %}{% endblock %}
+  </main>
+</body>
+</html>

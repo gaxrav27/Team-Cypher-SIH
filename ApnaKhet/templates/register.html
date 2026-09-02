@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block title %}{{ t('farmer_sign_up') }}{% endblock %}
+{% block content %}
+  <h1>{{ t('register_heading') }}</h1>
+  <form method="POST" class="form">
+    <label>{{ t('full_name') }}
+      <input type="text" name="full_name" required>
+    </label>
+    <label>{{ t('village') }}
+      <input type="text" name="village" required>
+    </label>
+    <label>{{ t('phone_number') }}
+      <input type="text" name="phone" required>
+    </label>
+    <label>{{ t('preferred_lang') }}
+      <!--
+        These option VALUES stay as plain language codes ("en"/"hi"/"mr")
+        because that's what gets stored in the database and used as a
+        lookup key everywhere else in the app. Only the visible LABEL
+        (each language's own name) changes with the switcher.
+      -->
+      <select name="preferred_lang">
+        {% for code, name in language_names.items() %}
+          <option value="{{ code }}" {{ "selected" if current_lang == code else "" }}>{{ name }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>{{ t('username') }}
+      <input type="text" name="username" required>
+    </label>
+    <label>{{ t('password') }}
+      <input type="password" name="password" required>
+    </label>
+    <button type="submit" class="btn btn-primary">{{ t('create_account') }}</button>
+  </form>
+{% endblock %}

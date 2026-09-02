@@ -1,0 +1,885 @@
+{% extends "base.html" %}
+{% block title %}{{ t('your_past_reports') }}{% endblock %}
+{% block head %}
+<script>
+const LANG = '{{ current_lang }}';
+const CROPS = {{ crops|tojson }};
+const MONTHS = {{ months|tojson }};
+const CROP_LABELS = {
+{% for crop in crops %}
+  '{{ crop }}': '{{ t_crop(crop) }}'{% if not loop.last %},{% endif %}
+{% endfor %}
+};
+const MONTH_LABELS = {
+{% for month in months %}
+  '{{ month }}': '{{ t_month(month) }}'{% if not loop.last %},{% endif %}
+{% endfor %}
+};
+
+// Voice Assistant
+let vaActive = false;
+let vaStep = 0;
+let recognition = null;
+const speechLang = LANG;
+let currentAudio = null;
+
+// All assistant prompts (in the selected language)
+const PROMPTS = {
+  en: { greeting: "Hello! I am your voice assistant. I will help you fill the report. Let us begin.",
+        askCrop: "What crop are you growing? Say the crop name.",
+        askMonth: "Which month are you concerned about? Say the month name.",
+        askPrice: "What price did you receive per quintal? Say the number.",
+        askLoan: "How many days until your loan payment is due? Say the number.",
+        askDelay: "How many weeks late was your sowing? Say 0, 2, 4, 6 or 8.",
+        askProblem: "Please describe your problem in detail.",
+        confirm: "Your report is ready. Review the fields and click Submit. Thank you!",
+        listening: "Listening...", speaking: "Speaking...", processing: "Processing...",
+        noMatch: "Could not recognize. Please try again.",
+        cropDetected: "Detected crop:", monthDetected: "Detected month:" },
+  hi: { greeting: "नमस्ते! मैं आपकी वॉइस असिस्टेंट हूँ। मैं आपकी रिपोर्ट भरने में मदद करूँगी। शुरू करते हैं।",
+        askCrop: "आप कौन सी फसल उगा रहे हैं? फसल का नाम बोलें।",
+        askMonth: "आप किस महीने को लेकर चिंतित हैं? महीने का नाम बोलें।",
+        askPrice: "आपको प्रति क्विंटल कितना भाव मिला? संख्या बोलें।",
+        askLoan: "आपके ऋण भुगतान की देय तिथि तक कितने दिन बचे हैं? संख्या बोलें।",
+        askDelay: "आपकी बुवाई कितने सप्ताह देर से हुई? 0, 2, 4, 6 या 8 बोलें।",
+        askProblem: "कृपया अपनी समस्या विस्तार से बताएं।",
+        confirm: "आपकी रिपोर्ट तैयार है। फ़ील्ड्स देखें और सबमिट पर क्लिक करें। धन्यवाद!",
+        listening: "सुन रहे हैं...", speaking: "बोल रहे हैं...", processing: "प्रक्रिया हो रही है...",
+        noMatch: "पहचान नहीं हो सकी। कृपया फिर से कोशिश करें।",
+        cropDetected: "पहचानी गई फसल:", monthDetected: "पहचाना गया महीना:" },
+  mr: { greeting: "नमस्कार! मी तुमची व्हॉइस असिस्टंट आहे. मी तुम्हाला अहवाल भरण्यास मदत करेन. सुरू करूया.",
+        askCrop: "तुम्ही कोणते पीक लावत आहात? पिकाचे नाव सांगा.",
+        askMonth: "तुम्हाला कोणत्या महिन्याबद्दल चिंता आहे? महिन्याचे नाव सांगा.",
+        askPrice: "तुम्हाला प्रति क्विंटल कितका भाव मिळाला? संख्या सांगा.",
+        askLoan: "तुमच्या कर्ज परतफेडीची मुदत किती दिवसांत आहे? संख्या सांगा.",
+        askDelay: "तुमची पेरणी किती आठवडे उशिरा झाली? 0, 2, 4, 6 किंवा 8 सांगा.",
+        askProblem: "कृपया तुमची समस्या तपशीलाने सांगा.",
+        confirm: "तुमचा अहवाल तयार आहे. फील्ड्स तपासा आणि सबमिटवर क्लिक करा. धन्यवाद!",
+        listening: "ऐकत आहे...", speaking: "बोलत आहे...", processing: "प्रक्रिया होत आहे...",
+        noMatch: "ओळखता आले नाही. कृपया पुन्हा प्रयत्न करा.",
+        cropDetected: "ओळखलेले पीक:", monthDetected: "ओळखलेला महिना:" }
+};
+function p(key) { return (PROMPTS[LANG] && PROMPTS[LANG][key]) || PROMPTS.en[key]; }
+
+// Devanagari numerals
+const DEV = {'0':'०','1':'१','2':'२','3':'३','4':'४','5':'५','6':'६','7':'७','8':'८','9':'९'};
+function num(s) { return LANG === 'en' ? String(s) : String(s).replace(/[0-9]/g, d => DEV[d] || d); }
+
+function speak(text) {
+  return new Promise(resolve => {
+    if (!vaActive) { resolve(); return; }
+    if (currentAudio) { currentAudio.pause(); currentAudio = null; }
+    updateStatus('speaking');
+    const url = '/api/tts?text=' + encodeURIComponent(text) + '&lang=' + encodeURIComponent(speechLang);
+    currentAudio = new Audio(url);
+    currentAudio.onended = () => { currentAudio = null; resolve(); };
+    currentAudio.onerror = () => { currentAudio = null; resolve(); };
+    currentAudio.play().catch(() => { currentAudio = null; resolve(); });
+  });
+}
+
+function listen() {
+  return new Promise((resolve, reject) => {
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SR) {
+      updateStatus('error');
+      document.getElementById('va-status').textContent = 'Speech recognition not supported. Use HTTPS or Chrome.';
+      reject(new Error('no-api')); return;
+    }
+    recognition = new SR();
+    recognition.lang = speechLang;
+    recognition.interimResults = false;
+    recognition.continuous = false;
+    recognition.maxAlternatives = 3;
+    let settled = false;
+    // Timeout: if no result in 12 seconds, give up
+    const timer = setTimeout(() => {
+      if (!settled) {
+        settled = true;
+        try { recognition.stop(); } catch(e) {}
+        reject(new Error('timeout'));
+      }
+    }, 12000);
+    recognition.onresult = (e) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(e.results[0][0].transcript);
+    };
+    recognition.onerror = (e) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      // e.error is the real reason ('network', 'not-allowed', 'no-speech', etc).
+      // Wrap it in a plain Error so callers can read it consistently via .code.
+      const err = new Error('recognition-error');
+      err.code = e.error;
+      reject(err);
+    };
+    recognition.onend = () => {
+      if (!settled) {
+        settled = true;
+        clearTimeout(timer);
+        // Recognition ended without result or error — treat as no-match
+        reject(new Error('no-result'));
+      }
+    };
+    try {
+      recognition.start();
+      updateStatus('listening');
+    } catch(e) {
+      settled = true;
+      clearTimeout(timer);
+      reject(e);
+    }
+  });
+}
+
+// Browsers whose Chromium engine doesn't ship the Google speech-recognition
+// backend (Opera chief among them) will happily create a SpeechRecognition
+// object and call onerror('network') every single time — the mic never
+// actually gets analyzed. Detect this class of browser upfront so we can
+// warn instead of silently retrying forever.
+function getUnsupportedBrowserReason() {
+  const ua = navigator.userAgent;
+  if (/OPR\//.test(ua) || /Opera/.test(ua)) return 'Opera';
+  if (/Brave/.test(ua) && navigator.brave) return 'Brave';
+  return null;
+}
+
+function updateStatus(state) {
+  const el = document.getElementById('va-status');
+  const dot = document.getElementById('va-dot');
+  if (!el) return;
+  if (state === 'listening') {
+    el.textContent = p('listening');
+    dot.className = 'va-dot va-dot-listening';
+  } else if (state === 'speaking') {
+    el.textContent = p('speaking');
+    dot.className = 'va-dot va-dot-speaking';
+  } else if (state === 'processing') {
+    el.textContent = p('processing');
+    dot.className = 'va-dot va-dot-processing';
+  } else if (state === 'error') {
+    dot.className = 'va-dot va-dot-error';
+    el.className = 'va-status-error';
+  } else {
+    el.textContent = '';
+    el.className = '';
+    dot.className = 'va-dot';
+  }
+}
+
+function updateStep(step) {
+  document.querySelectorAll('.va-step-indicator').forEach((el, i) => {
+    el.classList.toggle('active', i === step);
+    el.classList.toggle('done', i < step);
+  });
+  // Highlight current form field
+  document.querySelectorAll('.form-step').forEach((el, i) => {
+    el.classList.toggle('highlighted', i === step);
+  });
+}
+
+// Alias map: common spoken variants → canonical crop name
+const CROP_ALIASES = {
+  'soyabean': 'Soybean', 'soy bean': 'Soybean', 'soya': 'Soybean', 'soy': 'Soybean',
+  'toor': 'Tur', 'arhar': 'Tur', 'arhar ': 'Tur', 'pigeon pea': 'Tur', 'pigeon': 'Tur',
+  'kapas': 'Cotton', 'cotton': 'Cotton',
+  'chana': 'Gram', 'chickpea': 'Gram', 'bengal gram': 'Gram', 'gram': 'Gram',
+  'gehu': 'Wheat', 'kanak': 'Wheat', 'wheat': 'Wheat',
+  'mung': 'Moong', 'green gram': 'Moong', 'moong': 'Moong',
+  'jowari': 'Jowar', 'jowar': 'Jowar', 'sorghum': 'Jowar', 'jawar': 'Jowar',
+  'til': 'Sesamum', 'sesame': 'Sesamum', 'sesamum': 'Sesamum',
+};
+// Match spoken text to crop names
+function matchCrop(text) {
+  const lower = text.toLowerCase().trim();
+  // 1. Exact alias match
+  if (CROP_ALIASES[lower]) return CROP_ALIASES[lower];
+  // 2. Check if any alias key is contained in the spoken text
+  for (const [alias, crop] of Object.entries(CROP_ALIASES)) {
+    if (lower.includes(alias)) return crop;
+  }
+  // 3. Check against canonical crop names and translated labels
+  for (const crop of CROPS) {
+    if (lower.includes(crop.toLowerCase())) return crop;
+    const label = CROP_LABELS[crop].toLowerCase();
+    if (lower.includes(label.split('(')[0].trim().toLowerCase())) return crop;
+    if (lower.includes(label.toLowerCase())) return crop;
+  }
+  // 4. Fuzzy: check first few chars
+  for (const crop of CROPS) {
+    if (crop.toLowerCase().startsWith(lower.substring(0, 3))) return crop;
+  }
+  return null;
+}
+
+// Alias map for months (English abbreviations + Hindi/Marathi short forms)
+const MONTH_ALIASES = {
+  'jan': 'January', 'january': 'January', 'जनवरी': 'January', 'जन': 'January',
+  'feb': 'February', 'february': 'February', 'फरवरी': 'February', 'फर': 'February',
+  'mar': 'March', 'march': 'March', 'मार्च': 'March',
+  'apr': 'April', 'april': 'April', 'अप्रैल': 'April',
+  'may': 'May', 'मई': 'May', 'मे': 'May',
+  'jun': 'June', 'june': 'June', 'जून': 'June',
+  'jul': 'July', 'july': 'July', 'जुलाई': 'July', 'जुलै': 'July',
+  'aug': 'August', 'august': 'August', 'अगस्त': 'August', 'ऑगस्ट': 'August',
+  'sep': 'September', 'september': 'September', 'सितंबर': 'September', 'सप्टेंबर': 'September',
+  'oct': 'October', 'october': 'October', 'अक्टूबर': 'October', 'ऑक्टोबर': 'October',
+  'nov': 'November', 'november': 'November', 'नवंबर': 'November', 'नोव्हेंबर': 'November',
+  'dec': 'December', 'december': 'December', 'दिसंबर': 'December', 'डिसेंबर': 'December',
+};
+// Match spoken text to month names
+function matchMonth(text) {
+  const lower = text.toLowerCase().trim();
+  // 1. Alias match
+  if (MONTH_ALIASES[lower]) return MONTH_ALIASES[lower];
+  // 2. Check if any alias is contained in the spoken text
+  // Sort by length descending so 'september' matches before 'sep'
+  const sortedAliases = Object.entries(MONTH_ALIASES).sort((a, b) => b[0].length - a[0].length);
+  for (const [alias, month] of sortedAliases) {
+    if (lower.includes(alias)) return month;
+  }
+  // 3. Direct match against month names
+  for (const month of MONTHS) {
+    if (lower.includes(month.toLowerCase())) return month;
+    const label = MONTH_LABELS[month].toLowerCase();
+    if (lower.includes(label.toLowerCase())) return month;
+  }
+  return null;
+}
+
+// Word-to-number mapping (English + Hindi + Marathi)
+const WORD_NUMS = {
+  'zero': 0, 'शून्य': 0, 'शून्य ': 0,
+  'one': 1, 'एक': 1, 'एक ': 1,
+  'two': 2, 'दो': 2, 'दोन': 2,
+  'three': 3, 'तीन': 3, 'तीन ': 3,
+  'four': 4, 'चार': 4, 'चार ': 4,
+  'five': 5, 'पाँच': 5, 'पांच': 5, 'पाच': 5,
+  'six': 6, 'छह': 6, 'सहा': 6, 'छ:': 6,
+  'seven': 7, 'सात': 7, 'सात ': 7,
+  'eight': 8, 'आठ': 8, 'आठ ': 8,
+  'nine': 9, 'नौ': 9, 'नौ ': 9,
+  'ten': 10, 'दस': 10, 'दहा': 10,
+  'twenty': 20, 'बीस': 20, 'वीस': 20,
+  'thirty': 30, 'तीस': 30, 'तीस ': 30,
+  'forty': 40, 'चालीस': 40, 'चाळीस': 40,
+  'fifty': 50, 'पचास': 50, 'पन्नास': 50,
+  'sixty': 60, 'साठ': 60, 'साठ ': 60,
+  'seventy': 70, 'सत्तर': 70, 'सत्तर ': 70,
+  'eighty': 80, 'अस्सी': 80, 'ऐंशी': 80,
+  'ninety': 90, 'नब्बे': 90, 'णव्वे': 90,
+  'hundred': 100, 'सौ': 100, 'शे': 100, 'शंभर': 100,
+  'thousand': 1000, 'हज़ार': 1000, 'हजार': 1000, 'हजार ': 1000, 'हज़ार ': 1000, 'हजार': 1000,
+};
+// Extract number from speech — handles digits, Devanagari digits, and word numbers
+function extractNumber(text) {
+  const lower = text.toLowerCase().trim();
+  // Try direct digit extraction first
+  const cleaned = lower.replace(/[^0-9०-९]/g, '');
+  const deToW = {'०':'0','१':'1','२':'2','३':'3','४':'4','५':'5','६':'6','७':'7','८':'8','९':'9'};
+  const western = cleaned.replace(/[०-९]/g, d => deToW[d] || d);
+  const digitResult = parseInt(western);
+  if (!isNaN(digitResult) && digitResult > 0) return digitResult;
+  // Try word-number matching
+  let total = 0;
+  let current = 0;
+  for (const [word, val] of Object.entries(WORD_NUMS)) {
+    if (lower.includes(word)) {
+      if (val === 1000 || val === 100) {
+        current = current === 0 ? val : current * val;
+      } else {
+        current += val;
+      }
+    }
+  }
+  total = current > 0 ? current : 0;
+  if (total > 0) return total;
+  // Last resort: try to find ANY number in the text
+  const anyNum = lower.match(/\d+/);
+  if (anyNum) return parseInt(anyNum[0]);
+  return 0;
+}
+
+// Match delay weeks
+function matchDelay(text) {
+  const lower = text.toLowerCase().trim();
+  const n = extractNumber(lower);
+  if ([0,2,4,6,8].includes(n)) return n;
+  // Word matches
+  if (lower.includes('zero') || lower.includes('none') || lower.includes('no') || lower.includes('not') || lower.includes('on time') || lower.includes('समय') || lower.includes('वेळेवर') || lower.includes('शून्य')) return 0;
+  if (lower.includes('two') || lower.includes('दो') || lower.includes('दोन') || lower.includes('2')) return 2;
+  if (lower.includes('four') || lower.includes('चार') || lower.includes('चार ') || lower.includes('4')) return 4;
+  if (lower.includes('six') || lower.includes('छह') || lower.includes('सहा') || lower.includes('6')) return 6;
+  if (lower.includes('eight') || lower.includes('आठ') || lower.includes('8')) return 8;
+  return 0;
+}
+
+// Set form value and highlight
+function setFormValue(name, value) {
+  const el = document.querySelector(`[name="${name}"]`);
+  if (el) {
+    el.value = value;
+    el.style.borderColor = 'var(--green-600)';
+    // Fire change event so form state updates for <select> elements
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    setTimeout(() => el.style.borderColor = '', 2000);
+  }
+}
+
+// Small delay helper
+function delay(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+// Get prompt with retry
+async function askWithRetry(promptKey, processFn, retries = 2) {
+  for (let i = 0; i <= retries; i++) {
+    if (!vaActive) return null;
+    await speak(p(promptKey));
+    if (!vaActive) return null;
+    // Wait 600ms after TTS finishes so mic doesn't pick up the tail of the speech
+    await delay(600);
+    if (!vaActive) return null;
+    try {
+      const text = await listen();
+      console.log('Voice heard:', text);
+      const result = processFn(text);
+      console.log('Match result:', result);
+      if (result !== null && result !== undefined) return result;
+      if (i < retries) await speak(p('noMatch'));
+    } catch(e) {
+      console.warn('Listen error:', e.code || e.message || e.error);
+      if (e.message === 'no-api' || e.message === 'timeout') {
+        return null;
+      }
+      // 'network' / 'not-allowed' are not "you mumbled, try again" cases —
+      // they mean recognition can't run at all on this browser/setup.
+      // Retrying just burns time, so stop immediately and say why.
+      if (e.code === 'network' || e.code === 'not-allowed') {
+        updateStatus('error');
+        const el = document.getElementById('va-status');
+        if (el) {
+          el.textContent = e.code === 'not-allowed'
+            ? 'Microphone access was blocked. Allow mic permission for this site and try again.'
+            : 'This browser can\'t reach the speech recognition service (this happens on Opera/Brave). Please retry in Chrome or Edge, or fill the form manually.';
+        }
+        throw e; // bubble up so the caller (startAssistant) stops the flow
+      }
+      if (i < retries) await speak(p('noMatch'));
+    }
+  }
+  return null;
+}
+
+function finishAssistant() {
+  vaActive = false;
+  document.getElementById('va-btn').innerHTML = '{{ t("va_start") }}';
+  document.getElementById('va-btn').classList.remove('active');
+  document.getElementById('va-overlay').style.display = 'none';
+  updateStep(-1);
+  updateStatus('idle');
+}
+
+async function startAssistant() {
+  if (vaActive) { stopAssistant(); return; }
+
+  // Warn upfront on browsers whose SpeechRecognition object exists but
+  // can't actually reach a recognition backend (Opera, Brave, etc). TTS
+  // still works on these, which is what made the failure confusing.
+  const unsupported = getUnsupportedBrowserReason();
+  if (unsupported) {
+    const proceed = confirm(
+      unsupported + ' does not support the speech recognition service the voice ' +
+      'assistant relies on (it will speak the questions but never hear your answers). ' +
+      'Please switch to Google Chrome or Microsoft Edge for the voice assistant, or fill ' +
+      'the form manually.\n\nTry anyway?'
+    );
+    if (!proceed) return;
+  }
+
+  vaActive = true;
+  vaStep = 0;
+  document.getElementById('va-btn').innerHTML = '{{ t("va_stop") }}';
+  document.getElementById('va-btn').classList.add('active');
+  document.getElementById('va-overlay').style.display = 'flex';
+
+  try {
+    // Greeting
+    await speak(p('greeting'));
+    if (!vaActive) return;
+
+    // Step 0: Crop
+    updateStep(0);
+    const crop = await askWithRetry('askCrop', (t) => matchCrop(t));
+    if (crop && vaActive) {
+      setFormValue('crop', crop);
+      await speak(p('cropDetected') + ' ' + CROP_LABELS[crop]);
+    }
+    if (!vaActive) return;
+
+    // Step 1: Month
+    updateStep(1);
+    const month = await askWithRetry('askMonth', (t) => matchMonth(t));
+    if (month && vaActive) {
+      setFormValue('month', month);
+      await speak(p('monthDetected') + ' ' + MONTH_LABELS[month]);
+    }
+    if (!vaActive) return;
+
+    // Step 2: Price
+    updateStep(2);
+    const price = await askWithRetry('askPrice', (t) => extractNumber(t));
+    if (price !== null && price !== undefined && vaActive) {
+      setFormValue('reported_price', price);
+    }
+    if (!vaActive) return;
+
+    // Step 3: Loan days
+    updateStep(3);
+    const loan = await askWithRetry('askLoan', (t) => extractNumber(t));
+    if (loan !== null && loan !== undefined && vaActive) {
+      setFormValue('days_to_loan_due', loan);
+    }
+    if (!vaActive) return;
+
+    // Step 4: Delay
+    updateStep(4);
+    const delayWeeks = await askWithRetry('askDelay', (t) => matchDelay(t));
+    if (delayWeeks !== null && delayWeeks !== undefined && vaActive) {
+      setFormValue('monsoon_delay_weeks', delayWeeks);
+    }
+    if (!vaActive) return;
+
+    // Step 5: Problem
+    updateStep(5);
+    await speak(p('askProblem'));
+    if (!vaActive) return;
+    await delay(600);
+    if (!vaActive) return;
+    try {
+      const problemText = await listen();
+      if (problemText && vaActive) {
+        document.getElementById('problem-text').value = problemText;
+      }
+    } catch(e) {}
+    if (!vaActive) return;
+
+    // Step 6: Confirm
+    updateStep(6);
+    await speak(p('confirm'));
+
+    // Done
+    finishAssistant();
+  } catch (e) {
+    // A hard recognition failure (network/not-allowed) was already written
+    // to va-status by askWithRetry — leave the overlay up for a few seconds
+    // so the farmer/tester can actually read it before it disappears.
+    console.warn('Voice assistant stopped:', e.code || e.message);
+    vaActive = false;
+    document.getElementById('va-btn').innerHTML = '{{ t("va_start") }}';
+    document.getElementById('va-btn').classList.remove('active');
+    setTimeout(finishAssistant, 4000);
+  }
+}
+
+function stopAssistant() {
+  vaActive = false;
+  if (currentAudio) { currentAudio.pause(); currentAudio = null; }
+  if (recognition) try { recognition.abort(); } catch(e) {}
+  finishAssistant();
+}
+
+function playAudio(id) {
+  const a = document.getElementById('audio-' + id);
+  if (a) a.play();
+}
+</script>
+
+<style>
+/* --- Voice Assistant Overlay --- */
+.va-overlay {
+  display: none;
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  width: 340px;
+  background: var(--white);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 20px 60px rgba(0,0,0,0.2);
+  border: 1px solid var(--earth-200);
+  z-index: 1000;
+  overflow: hidden;
+  animation: slideUp 0.3s var(--ease);
+}
+@keyframes slideUp { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
+
+.va-header {
+  background: linear-gradient(135deg, var(--indigo-800), var(--indigo-700));
+  color: var(--white);
+  padding: 16px 20px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.va-header-avatar {
+  width: 40px; height: 40px;
+  border-radius: 50%;
+  background: rgba(255,255,255,0.15);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 20px;
+}
+.va-header-text h3 { margin: 0; font-size: 15px; font-weight: 700; }
+.va-header-text p { margin: 0; font-size: 12px; opacity: 0.7; }
+
+.va-body { padding: 16px 20px; }
+
+.va-steps {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 16px;
+}
+.va-step-indicator {
+  flex: 1;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--earth-200);
+  transition: all 0.3s var(--ease);
+}
+.va-step-indicator.active { background: var(--indigo-500); }
+.va-step-indicator.done { background: var(--green-500); }
+
+.va-status-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px;
+  background: var(--earth-50);
+  border-radius: var(--radius-sm);
+  margin-bottom: 12px;
+}
+.va-dot {
+  width: 10px; height: 10px;
+  border-radius: 50%;
+  background: var(--gray-300);
+  flex-shrink: 0;
+}
+.va-dot-listening { background: var(--red-600); animation: pulse 1s infinite; }
+.va-dot-speaking { background: var(--indigo-500); animation: pulse 1s infinite; }
+.va-dot-processing { background: var(--amber-500); animation: spin 1s linear infinite; }
+.va-dot-error { background: var(--red-600); }
+#va-status.va-status-error { color: var(--red-600); font-weight: 600; }
+@keyframes pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(99,102,241,0.4); }
+  50% { box-shadow: 0 0 0 6px rgba(99,102,241,0); }
+}
+
+#va-status { font-size: 13px; color: var(--gray-600); font-weight: 500; }
+
+.va-footer {
+  padding: 12px 20px;
+  border-top: 1px solid var(--earth-100);
+  text-align: center;
+  font-size: 12px;
+  color: var(--gray-400);
+}
+
+/* --- Report Form Card --- */
+.report-card {
+  background: var(--white);
+  border: 1px solid var(--earth-200);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  box-shadow: var(--shadow-md);
+  margin-bottom: 32px;
+}
+.report-card-header {
+  background: linear-gradient(135deg, var(--indigo-800), var(--indigo-700));
+  color: var(--white);
+  padding: 24px 28px;
+}
+.report-card-header h2 { margin: 0 0 4px; font-size: 22px; font-weight: 800; }
+.report-card-header p { margin: 0; font-size: 14px; opacity: 0.7; }
+
+.report-card-body { padding: 28px; }
+
+.form-steps { display: flex; flex-direction: column; gap: 0; }
+
+.form-step {
+  padding: 20px 24px;
+  border-left: 3px solid transparent;
+  transition: all 0.3s var(--ease);
+  position: relative;
+}
+.form-step + .form-step { border-top: 1px solid var(--earth-100); }
+.form-step.highlighted {
+  border-left-color: var(--indigo-500);
+  background: var(--indigo-50);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+}
+.form-step .step-number {
+  position: absolute;
+  left: -14px;
+  top: 22px;
+  width: 24px; height: 24px;
+  border-radius: 50%;
+  background: var(--earth-200);
+  color: var(--gray-600);
+  font-size: 12px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.form-step.highlighted .step-number { background: var(--indigo-500); color: var(--white); }
+
+.form-step label {
+  display: block;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--gray-600);
+  margin-bottom: 6px;
+}
+.form-step .field-emoji { margin-right: 4px; }
+
+.form-step input,
+.form-step select,
+.form-step textarea {
+  width: 100%;
+  padding: 11px 14px;
+  border-radius: var(--radius-sm);
+  border: 1.5px solid var(--earth-200);
+  font-size: 15px;
+  font-family: inherit;
+  background: var(--white);
+  transition: border-color 0.2s;
+}
+.form-step input:focus,
+.form-step select:focus,
+.form-step textarea:focus {
+  outline: none;
+  border-color: var(--indigo-400);
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.12);
+}
+
+/* --- Voice Assistant Button --- */
+.va-start-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 14px 28px;
+  border-radius: var(--radius-full);
+  border: 2px solid var(--indigo-300);
+  background: linear-gradient(135deg, var(--indigo-50), var(--white));
+  color: var(--indigo-700);
+  font-size: 15px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.3s var(--ease);
+  font-family: inherit;
+  margin-bottom: 24px;
+}
+.va-start-btn:hover {
+  background: var(--indigo-100);
+  border-color: var(--indigo-400);
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-md);
+}
+.va-start-btn.active {
+  background: var(--red-100);
+  border-color: var(--red-500);
+  color: var(--red-600);
+  animation: pulse 1.5s infinite;
+}
+
+/* --- Submit Button --- */
+.submit-row {
+  padding: 20px 24px;
+  border-top: 2px solid var(--earth-100);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+/* --- Recommendation Card --- */
+.recommendation-card {
+  background: linear-gradient(135deg, #eef2ff, #fef3c7);
+  border: 1px solid var(--indigo-200);
+  border-radius: var(--radius-md);
+  padding: 20px;
+  margin-top: 16px;
+}
+.recommendation-card h3 { color: var(--indigo-800); margin-bottom: 8px; font-size: 16px; }
+.recommendation-card p { font-size: 14px; color: var(--gray-700); line-height: 1.6; margin: 0 0 12px; }
+.recommendation-card .profit-tip {
+  background: var(--amber-100);
+  border: 1px solid var(--amber-200);
+  border-radius: var(--radius-sm);
+  padding: 12px;
+  font-size: 14px;
+  color: var(--amber-800);
+}
+
+/* --- Reports Table --- */
+.reports-section { margin-top: 40px; }
+.reports-section h2 { font-size: 20px; font-weight: 700; margin-bottom: 16px; }
+
+@media (max-width: 640px) {
+  .va-overlay { width: calc(100% - 32px); left: 16px; right: 16px; bottom: 16px; }
+  .form-step { padding: 16px; }
+}
+</style>
+{% endblock %}
+
+{% block content %}
+<h1>{{ t('welcome') }}, {{ user['full_name'] }}</h1>
+<p class="subtle">{{ user['village'] }}</p>
+
+<!-- Report Form Card -->
+<div class="report-card">
+  <div class="report-card-header">
+    <h2>📋 {{ t('submit_new_report') }}</h2>
+    <p>Fill the form below or use the voice assistant</p>
+  </div>
+
+  <div class="report-card-body">
+    <!-- Voice Assistant Start Button -->
+    <button type="button" id="va-btn" class="va-start-btn" onclick="startAssistant()">
+      {{ t('va_start') }}
+    </button>
+
+    <form method="POST" action="{{ url_for('submit_report') }}" class="form-steps">
+      <!-- Step 1: Crop -->
+      <div class="form-step" data-step="0">
+        <span class="step-number">1</span>
+        <label>{{ t('crop') }}</label>
+        <select name="crop" required>
+          {% for crop in crops %}
+            <option value="{{ crop }}">{{ t_crop(crop) }}</option>
+          {% endfor %}
+        </select>
+      </div>
+
+      <!-- Step 2: Month -->
+      <div class="form-step" data-step="1">
+        <span class="step-number">2</span>
+        <label>{{ t('month_concerned') }}</label>
+        <select name="month" required>
+          {% for month in months %}
+            <option value="{{ month }}">{{ t_month(month) }}</option>
+          {% endfor %}
+        </select>
+      </div>
+
+      <!-- Step 3: Price -->
+      <div class="form-step" data-step="2">
+        <span class="step-number">3</span>
+        <label>{{ t('price_received') }}</label>
+        <input type="number" name="reported_price" min="0" required placeholder="e.g. {{ num(6265) }}">
+      </div>
+
+      <!-- Step 4: Loan -->
+      <div class="form-step" data-step="3">
+        <span class="step-number">4</span>
+        <label>{{ t('days_to_loan_due') }}</label>
+        <input type="number" name="days_to_loan_due" min="0" required placeholder="e.g. {{ num(30) }}">
+      </div>
+
+      <!-- Step 5: Delay -->
+      <div class="form-step" data-step="4">
+        <span class="step-number">5</span>
+        <label>{{ t('sowing_delay_q') }}</label>
+        <select name="monsoon_delay_weeks" required>
+          <option value="0">{{ t('delay_0') }}</option>
+          <option value="2">{{ t('delay_2') }}</option>
+          <option value="4">{{ t('delay_4') }}</option>
+          <option value="6">{{ t('delay_6') }}</option>
+          <option value="8">{{ t('delay_8') }}</option>
+        </select>
+      </div>
+
+      <!-- Step 6: Problem -->
+      <div class="form-step" data-step="5">
+        <span class="step-number">6</span>
+        <label>{{ t('describe_problem') }}</label>
+        <textarea id="problem-text" name="problem_text" rows="3" placeholder="{{ t('problem_voice') }}"></textarea>
+      </div>
+
+      <!-- Submit -->
+      <div class="submit-row">
+        <button type="submit" class="btn btn-primary btn-large">{{ t('submit_report') }}</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- Voice Assistant Overlay (bottom-right) -->
+<div id="va-overlay" class="va-overlay">
+  <div class="va-header">
+    <div class="va-header-avatar"></div>
+    <div class="va-header-text">
+      <h3>Voice Assistant</h3>
+      <p>{{ t('va_listening') }}</p>
+    </div>
+  </div>
+  <div class="va-body">
+    <div class="va-steps">
+      <div class="va-step-indicator"></div>
+      <div class="va-step-indicator"></div>
+      <div class="va-step-indicator"></div>
+      <div class="va-step-indicator"></div>
+      <div class="va-step-indicator"></div>
+      <div class="va-step-indicator"></div>
+    </div>
+    <div class="va-status-row">
+      <div id="va-dot" class="va-dot"></div>
+      <span id="va-status"></span>
+    </div>
+  </div>
+  <div class="va-footer">Speak clearly in {{ t('preferred_lang') }}</div>
+</div>
+
+<!-- Recommendation -->
+{% if recommendation %}
+<section class="card recommendation-card">
+  <h3>{{ t('Temporary solution') }}</h3>
+  <p>{{ recommendation.recommendation }}</p>
+  <div class="profit-tip">
+    <strong>{{ t('Tips for maximum profit') }}</strong><br>
+    {{ recommendation.profit_tip }}
+  </div>
+</section>
+{% endif %}
+
+<!-- Past Reports -->
+<div class="reports-section">
+  <h2>{{ t('your_past_reports') }}</h2>
+  {% if reports|length == 0 %}
+    <p class="subtle">{{ t('no_reports_yet') }}</p>
+  {% else %}
+    <table class="table">
+      <thead>
+        <tr><th>{{ t('date') }}</th><th>{{ t('crop') }}</th><th>{{ t('month') }}</th><th>{{ t('status') }}</th><th></th><th></th></tr>
+      </thead>
+      <tbody>
+        {% for r in reports %}
+          <tr>
+            <td>{{ r['created_at'] }}</td>
+            <td>{{ t_crop(r['crop']) }}</td>
+            <td>{{ t_month(r['month']) }}</td>
+            <td><span class="badge badge-{{ r['risk_status'] }}">{{ t_status(r['risk_status']) }}</span></td>
+            <td><a href="{{ url_for('farmer_view_report', report_id=r['id']) }}">{{ t('view_advisory') }}</a></td>
+            <td>
+              <audio id="audio-{{ r['id'] }}" preload="none">
+                <source src="{{ url_for('report_audio', report_id=r['id'], lang=current_lang) }}" type="audio/wav">
+              </audio>
+              <button type="button" class="btn btn-small" onclick="playAudio({{ r['id'] }})">Play</button>
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% endif %}
+</div>
+{% endblock %}

@@ -1,0 +1,534 @@
+{% extends "base.html" %}
+{% block title %}{{ t('login_heading') }}{% endblock %}
+{% block head %}
+<style>
+/* --- Voice Assistant Overlay (shared look with the report-form assistant) --- */
+.va-start-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 22px;
+  border-radius: var(--radius-full);
+  border: 2px solid var(--indigo-300);
+  background: linear-gradient(135deg, var(--indigo-50), var(--white));
+  color: var(--indigo-700);
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.3s var(--ease);
+  font-family: inherit;
+  margin-bottom: 16px;
+  width: 100%;
+  justify-content: center;
+}
+.va-start-btn:hover {
+  background: var(--indigo-100);
+  border-color: var(--indigo-400);
+  box-shadow: var(--shadow-md);
+}
+.va-start-btn.active {
+  background: var(--red-100);
+  border-color: var(--red-600);
+  color: var(--red-600);
+  animation: va-pulse 1.5s infinite;
+}
+@keyframes va-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.7; }
+}
+@keyframes va-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.va-overlay {
+  display: none;
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  width: 320px;
+  background: var(--white);
+  border: 1px solid var(--indigo-200);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-md);
+  z-index: 1000;
+  overflow: hidden;
+}
+.va-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 16px;
+  background: linear-gradient(135deg, var(--indigo-600), var(--indigo-800));
+  color: var(--white);
+}
+.va-header-avatar { font-size: 22px; }
+.va-header-text h3 { font-size: 14px; margin: 0; }
+.va-header-text p { font-size: 12px; margin: 2px 0 0; opacity: 0.85; }
+.va-body { padding: 16px; }
+.va-steps { display: flex; gap: 6px; margin-bottom: 12px; }
+.va-step-indicator {
+  flex: 1;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--gray-200);
+  transition: background 0.3s var(--ease);
+}
+.va-step-indicator.active { background: var(--indigo-500); }
+.va-step-indicator.done { background: var(--green-600); }
+.va-status-row { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--gray-700); min-height: 18px; }
+.va-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--gray-300); }
+.va-dot-listening { background: var(--red-600); animation: va-pulse 1s infinite; }
+.va-dot-speaking { background: var(--indigo-500); animation: va-pulse 1s infinite; }
+.va-dot-processing { background: var(--amber-500); animation: va-spin 1s linear infinite; }
+.va-dot-error { background: var(--red-600); }
+#va-status.va-status-error { color: var(--red-600); font-weight: 600; }
+.va-footer { padding: 8px 16px; font-size: 11px; color: var(--gray-500); border-top: 1px solid var(--gray-100); }
+
+@media (max-width: 640px) {
+  .va-overlay { width: calc(100% - 32px); left: 16px; right: 16px; bottom: 16px; }
+}
+</style>
+<script>
+const LANG = '{{ current_lang }}';
+let recognition = null;
+let vaActive = false;
+const speechLang = LANG;
+let currentAudio = null;
+
+// Prompts for both the login flow and the sign-up flow, in the selected language.
+const AUTH_PROMPTS = {
+  en: {
+    loginGreeting: "Hello! I'll help you log in. Let's begin.",
+    askUsername: "Please say your username.",
+    askPassword: "Please say your password.",
+    usernameSet: "Username set to:",
+    passwordSet: "Password captured.",
+    loginConfirm: "Your login details are filled in. Review them and press Log in.",
+    signupGreeting: "Hello! I'll help you fill the sign-up form. Let's begin.",
+    askFullName: "Please say your full name.",
+    askNewUsername: "Please choose a username and say it.",
+    askNewPassword: "Please choose a password and say it.",
+    askPhone: "Please say your 10-digit phone number.",
+    askVillage: "Please say your village name.",
+    signupConfirm: "Your sign-up details are filled in. Review them, choose your preferred language, and press Create account.",
+    listening: "Listening...", speaking: "Speaking...", processing: "Processing...",
+    noMatch: "Could not hear that clearly. Please try again.",
+  },
+  hi: {
+    loginGreeting: "नमस्ते! मैं आपको लॉग इन करने में मदद करूँगी। शुरू करते हैं।",
+    askUsername: "कृपया अपना यूज़रनेम बोलें।",
+    askPassword: "कृपया अपना पासवर्ड बोलें।",
+    usernameSet: "यूज़रनेम सेट किया गया:",
+    passwordSet: "पासवर्ड दर्ज हो गया।",
+    loginConfirm: "आपकी लॉगिन जानकारी भर दी गई है। जाँच लें और लॉग इन दबाएँ।",
+    signupGreeting: "नमस्ते! मैं आपका पंजीकरण फ़ॉर्म भरने में मदद करूँगी। शुरू करते हैं।",
+    askFullName: "कृपया अपना पूरा नाम बोलें।",
+    askNewUsername: "कृपया एक यूज़रनेम चुनें और बोलें।",
+    askNewPassword: "कृपया एक पासवर्ड चुनें और बोलें।",
+    askPhone: "कृपया अपना 10 अंकों का फ़ोन नंबर बोलें।",
+    askVillage: "कृपया अपने गाँव का नाम बोलें।",
+    signupConfirm: "आपकी पंजीकरण जानकारी भर दी गई है। जाँच लें, अपनी भाषा चुनें और खाता बनाएँ दबाएँ।",
+    listening: "सुन रहे हैं...", speaking: "बोल रहे हैं...", processing: "प्रक्रिया हो रही है...",
+    noMatch: "स्पष्ट रूप से सुनाई नहीं दिया। कृपया फिर से कोशिश करें।",
+  },
+  mr: {
+    loginGreeting: "नमस्कार! मी तुम्हाला लॉग इन करण्यास मदत करेन. सुरू करूया.",
+    askUsername: "कृपया तुमचे युजरनेम सांगा.",
+    askPassword: "कृपया तुमचा पासवर्ड सांगा.",
+    usernameSet: "युजरनेम सेट केले:",
+    passwordSet: "पासवर्ड मिळाला.",
+    loginConfirm: "तुमची लॉगिन माहिती भरली आहे. तपासा आणि लॉग इन दाबा.",
+    signupGreeting: "नमस्कार! मी तुम्हाला नोंदणी फॉर्म भरण्यास मदत करेन. सुरू करूया.",
+    askFullName: "कृपया तुमचे पूर्ण नाव सांगा.",
+    askNewUsername: "कृपया एक युजरनेम निवडा आणि सांगा.",
+    askNewPassword: "कृपया एक पासवर्ड निवडा आणि सांगा.",
+    askPhone: "कृपया तुमचा 10 अंकी फोन नंबर सांगा.",
+    askVillage: "कृपया तुमच्या गावाचे नाव सांगा.",
+    signupConfirm: "तुमची नोंदणी माहिती भरली आहे. तपासा, तुमची भाषा निवडा आणि खाते तयार करा दाबा.",
+    listening: "ऐकत आहे...", speaking: "बोलत आहे...", processing: "प्रक्रिया होत आहे...",
+    noMatch: "नीट ऐकू आले नाही. कृपया पुन्हा प्रयत्न करा.",
+  }
+};
+function ap(key) { return (AUTH_PROMPTS[LANG] && AUTH_PROMPTS[LANG][key]) || AUTH_PROMPTS.en[key]; }
+
+function speak(text) {
+  return new Promise(resolve => {
+    if (!vaActive) { resolve(); return; }
+    if (currentAudio) { currentAudio.pause(); currentAudio = null; }
+    updateStatus('speaking');
+    const url = '/api/tts?text=' + encodeURIComponent(text) + '&lang=' + encodeURIComponent(speechLang);
+    currentAudio = new Audio(url);
+    currentAudio.onended = () => { currentAudio = null; resolve(); };
+    currentAudio.onerror = () => { currentAudio = null; resolve(); };
+    currentAudio.play().catch(() => { currentAudio = null; resolve(); });
+  });
+}
+
+function listen() {
+  return new Promise((resolve, reject) => {
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SR) {
+      updateStatus('error');
+      document.getElementById('va-status').textContent = 'Speech recognition not supported. Use Chrome or Edge.';
+      reject(new Error('no-api')); return;
+    }
+    recognition = new SR();
+    recognition.lang = speechLang;
+    recognition.interimResults = false;
+    recognition.continuous = false;
+    recognition.maxAlternatives = 1;
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (!settled) {
+        settled = true;
+        try { recognition.stop(); } catch(e) {}
+        reject(new Error('timeout'));
+      }
+    }, 12000);
+    recognition.onresult = (e) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(e.results[0][0].transcript);
+    };
+    recognition.onerror = (e) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      const err = new Error('recognition-error');
+      err.code = e.error;
+      reject(err);
+    };
+    recognition.onend = () => {
+      if (!settled) {
+        settled = true;
+        clearTimeout(timer);
+        reject(new Error('no-result'));
+      }
+    };
+    try {
+      recognition.start();
+      updateStatus('listening');
+    } catch(e) {
+      settled = true;
+      clearTimeout(timer);
+      reject(e);
+    }
+  });
+}
+
+function getUnsupportedBrowserReason() {
+  const ua = navigator.userAgent;
+  if (/OPR\//.test(ua) || /Opera/.test(ua)) return 'Opera';
+  if (/Brave/.test(ua) && navigator.brave) return 'Brave';
+  return null;
+}
+
+function updateStatus(state) {
+  const el = document.getElementById('va-status');
+  const dot = document.getElementById('va-dot');
+  if (!el) return;
+  if (state === 'listening') {
+    el.textContent = ap('listening');
+    dot.className = 'va-dot va-dot-listening';
+  } else if (state === 'speaking') {
+    el.textContent = ap('speaking');
+    dot.className = 'va-dot va-dot-speaking';
+  } else if (state === 'processing') {
+    el.textContent = ap('processing');
+    dot.className = 'va-dot va-dot-processing';
+  } else if (state === 'error') {
+    dot.className = 'va-dot va-dot-error';
+    el.className = 'va-status-error';
+  } else {
+    el.textContent = '';
+    el.className = '';
+    dot.className = 'va-dot';
+  }
+}
+
+function updateStep(step, total) {
+  document.querySelectorAll('.va-step-indicator').forEach((el, i) => {
+    el.classList.toggle('active', i === step);
+    el.classList.toggle('done', i < step);
+  });
+}
+
+function delay(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+// Speech recognition tends to capitalize the first word and add a trailing
+// full stop — strip that so it doesn't corrupt a username/password.
+function cleanSpoken(text) {
+  return text.trim().replace(/\.$/, '');
+}
+
+function setFormValue(name, value, formId) {
+  const el = document.querySelector(`#${formId} [name="${name}"]`);
+  if (el) {
+    el.value = value;
+    el.style.borderColor = 'var(--green-600)';
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    setTimeout(() => el.style.borderColor = '', 2000);
+  }
+}
+
+// One retry loop shared by both flows: speak the prompt, listen, and hand
+// the raw transcript to whatever the caller wants to do with it.
+async function askOnce(promptKey, retries = 2) {
+  for (let i = 0; i <= retries; i++) {
+    if (!vaActive) return null;
+    await speak(ap(promptKey));
+    if (!vaActive) return null;
+    await delay(600);
+    if (!vaActive) return null;
+    try {
+      const text = await listen();
+      const cleaned = cleanSpoken(text);
+      if (cleaned) return cleaned;
+      if (i < retries) await speak(ap('noMatch'));
+    } catch (e) {
+      console.warn('Listen error:', e.code || e.message);
+      if (e.message === 'no-api' || e.message === 'timeout') return null;
+      if (e.code === 'network' || e.code === 'not-allowed') {
+        updateStatus('error');
+        const el = document.getElementById('va-status');
+        if (el) {
+          el.textContent = e.code === 'not-allowed'
+            ? 'Microphone access was blocked. Allow mic permission for this site and try again.'
+            : "This browser can't reach the speech recognition service (happens on Opera/Brave). Please use Chrome or Edge, or fill the form manually.";
+        }
+        throw e;
+      }
+      if (i < retries) await speak(ap('noMatch'));
+    }
+  }
+  return null;
+}
+
+function openOverlay(stepCount) {
+  document.getElementById('va-btn').innerHTML = '{{ t("va_stop") }}';
+  document.getElementById('va-btn').classList.add('active');
+  const overlay = document.getElementById('va-overlay');
+  const stepsRow = document.getElementById('va-steps-row');
+  stepsRow.innerHTML = '';
+  for (let i = 0; i < stepCount; i++) {
+    const d = document.createElement('div');
+    d.className = 'va-step-indicator';
+    stepsRow.appendChild(d);
+  }
+  overlay.style.display = 'flex';
+}
+
+function closeOverlay() {
+  vaActive = false;
+  document.getElementById('va-btn').innerHTML = '{{ t("va_start") }}';
+  document.getElementById('va-btn').classList.remove('active');
+  document.getElementById('va-overlay').style.display = 'none';
+  updateStatus('idle');
+}
+
+function stopAssistant() {
+  vaActive = false;
+  if (currentAudio) { currentAudio.pause(); currentAudio = null; }
+  if (recognition) try { recognition.abort(); } catch(e) {}
+  closeOverlay();
+}
+
+async function startAssistant() {
+  if (vaActive) { stopAssistant(); return; }
+
+  const unsupported = getUnsupportedBrowserReason();
+  if (unsupported) {
+    const proceed = confirm(
+      unsupported + ' does not support the speech recognition service the voice ' +
+      'assistant relies on (it will speak the questions but never hear your answers). ' +
+      'Please switch to Google Chrome or Microsoft Edge, or fill the form manually.\n\nTry anyway?'
+    );
+    if (!proceed) return;
+  }
+
+  const isRegister = document.getElementById('panel-register').classList.contains('active');
+  vaActive = true;
+
+  try {
+    if (isRegister) {
+      openOverlay(5);
+      await speak(ap('signupGreeting'));
+      if (!vaActive) return;
+
+      updateStep(0);
+      const fullName = await askOnce('askFullName');
+      if (fullName && vaActive) setFormValue('full_name', fullName, 'register-form');
+      if (!vaActive) return;
+
+      updateStep(1);
+      const username = await askOnce('askNewUsername');
+      if (username && vaActive) setFormValue('username', username, 'register-form');
+      if (!vaActive) return;
+
+      updateStep(2);
+      const password = await askOnce('askNewPassword');
+      if (password && vaActive) setFormValue('password', password, 'register-form');
+      if (!vaActive) return;
+
+      updateStep(3);
+      const phoneRaw = await askOnce('askPhone');
+      if (phoneRaw && vaActive) {
+        const digits = phoneRaw.replace(/\D/g, '');
+        setFormValue('phone', digits, 'register-form');
+      }
+      if (!vaActive) return;
+
+      updateStep(4);
+      const village = await askOnce('askVillage');
+      if (village && vaActive) setFormValue('village', village, 'register-form');
+      if (!vaActive) return;
+
+      await speak(ap('signupConfirm'));
+    } else {
+      openOverlay(2);
+      await speak(ap('loginGreeting'));
+      if (!vaActive) return;
+
+      updateStep(0);
+      const username = await askOnce('askUsername');
+      if (username && vaActive) {
+        setFormValue('username', username, 'login-form');
+        await speak(ap('usernameSet') + ' ' + username);
+      }
+      if (!vaActive) return;
+
+      updateStep(1);
+      const password = await askOnce('askPassword');
+      if (password && vaActive) {
+        setFormValue('password', password, 'login-form');
+        await speak(ap('passwordSet'));
+      }
+      if (!vaActive) return;
+
+      await speak(ap('loginConfirm'));
+    }
+    closeOverlay();
+  } catch (e) {
+    console.warn('Voice assistant stopped:', e.code || e.message);
+    vaActive = false;
+    document.getElementById('va-btn').innerHTML = '{{ t("va_start") }}';
+    document.getElementById('va-btn').classList.remove('active');
+    setTimeout(closeOverlay, 4000);
+  }
+}
+</script>
+{% endblock %}
+{% block content %}
+  <div class="auth-container">
+    <div class="auth-card">
+      <div class="auth-card-header">
+        <div class="auth-icon"></div>
+        <h1>{% if role == 'farmer' %}{{ t('farmer_portal') }}{% else %}{{ t('officer_portal') }}{% endif %}</h1>
+        <p class="auth-role-label">
+          {% if role == 'farmer' %}{{ t('login_as_farmer') }}{% else %}{{ t('login_as_officer') }}{% endif %}
+        </p>
+      </div>
+
+      <!-- Tabs -->
+      <div class="auth-tabs">
+        <button class="auth-tab active" onclick="switchTab('login')">{{ t('login_tab') }}</button>
+        {% if role != 'officer' %}
+        <button class="auth-tab" onclick="switchTab('register')">{{ t('signup_tab') }}</button>
+        {% endif %}
+      </div>
+
+      <div class="auth-body">
+        <!-- Voice Assistant Start Button (works for whichever tab is open) -->
+        <button type="button" id="va-btn" class="va-start-btn" onclick="startAssistant()">
+          {{ t('va_start') }}
+        </button>
+
+        <!-- Login Panel -->
+        <div id="panel-login" class="auth-panel active">
+          <p class="auth-subtitle">{{ t('login_subtitle') }}</p>
+          <form id="login-form" method="POST" class="form">
+            <input type="hidden" name="role" value="{{ role }}">
+            <label>{{ t('username') }}
+              <input type="text" name="username" required autocomplete="username" placeholder="{{ t('placeholder_username') }}">
+            </label>
+            <label>{{ t('password') }}
+              <input type="password" name="password" required autocomplete="current-password" placeholder="{{ t('placeholder_password') }}">
+            </label>
+            <button type="submit" class="btn btn-primary">{{ t('log_in') }}</button>
+          </form>
+        </div>
+
+        <!-- Register Panel (hidden for officers) -->
+        {% if role != 'officer' %}
+        <div id="panel-register" class="auth-panel">
+          <p class="auth-subtitle">{{ t('signup_subtitle') }}</p>
+          <form id="register-form" method="POST" action="{{ url_for('register') }}" class="form">
+            <input type="hidden" name="role" value="{{ role }}">
+            <label>{{ t('full_name') }}
+              <input type="text" name="full_name" required placeholder="{{ t('placeholder_fullname') }}">
+            </label>
+            <label>{{ t('username') }}
+              <input type="text" name="username" required autocomplete="username" placeholder="{{ t('placeholder_choose_user') }}">
+            </label>
+            <label>{{ t('password') }}
+              <input type="password" name="password" required autocomplete="new-password" placeholder="{{ t('placeholder_choose_pass') }}">
+            </label>
+            <label>{{ t('phone_number') }}
+              <input type="tel" name="phone" required pattern="[0-9]{10}" placeholder="{{ t('placeholder_phone') }}">
+            </label>
+            <label>{{ t('village') }}
+              <input type="text" name="village" required placeholder="{{ t('placeholder_village') }}">
+            </label>
+            <label>{{ t('preferred_lang') }}
+              <select name="preferred_lang">
+                <option value="en">English</option>
+                <option value="hi">हिन्दी</option>
+                <option value="mr">मराठी</option>
+              </select>
+            </label>
+            <button type="submit" class="btn btn-amber">{{ t('create_account') }}</button>
+          </form>
+        </div>
+        {% endif %}
+      </div>
+    </div>
+
+    <!-- Voice Assistant Overlay (bottom-right) -->
+    <div id="va-overlay" class="va-overlay">
+      <div class="va-header">
+        <div class="va-header-avatar"></div>
+        <div class="va-header-text">
+          <h3>Voice Assistant</h3>
+          <p>{{ t('va_listening') }}</p>
+        </div>
+      </div>
+      <div class="va-body">
+        <div id="va-steps-row" class="va-steps"></div>
+        <div class="va-status-row">
+          <div id="va-dot" class="va-dot"></div>
+          <span id="va-status"></span>
+        </div>
+      </div>
+      <div class="va-footer">Speak clearly in {{ t('preferred_lang') }}</div>
+    </div>
+  </div>
+
+  <script>
+    function switchTab(tab) {
+      document.querySelectorAll('.auth-tab').forEach(t => t.classList.remove('active'));
+      document.querySelectorAll('.auth-panel').forEach(p => p.classList.remove('active'));
+      if (tab === 'login') {
+        document.querySelectorAll('.auth-tab')[0].classList.add('active');
+        document.getElementById('panel-login').classList.add('active');
+      } else {
+        var tabs = document.querySelectorAll('.auth-tab');
+        if (tabs.length > 1) tabs[1].classList.add('active');
+        var reg = document.getElementById('panel-register');
+        if (reg) reg.classList.add('active');
+      }
+    }
+  </script>
+{% endblock %}
+

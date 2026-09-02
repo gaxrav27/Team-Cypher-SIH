@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block title %}{{ t('officer_heading') }}{% endblock %}
+{% block content %}
+  <h1>{{ t('officer_heading') }}</h1>
+  <p class="subtle">{{ t('officer_subtitle') }}</p>
+
+  {% if reports|length == 0 %}
+    <p class="subtle">{{ t('no_reports_submitted') }}</p>
+  {% else %}
+    <table class="table">
+      <thead>
+        <tr>
+          <th>{{ t('farmer') }}</th><th>{{ t('village') }}</th><th>{{ t('crop') }}</th><th>{{ t('risk') }}</th>
+          <th>{{ t('status') }}</th><th>{{ t('verified') }}</th><th>{{ t('ngo_notified') }}</th><th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in reports %}
+          <tr>
+            <td>{{ r['farmer_name'] }}</td>
+            <td>{{ r['farmer_village'] }}</td>
+            <td>{{ t_crop(r['crop']) }}</td>
+            <td>{{ (r['risk_score'] * 100) | round | int }}</td>
+            <td><span class="badge badge-{{ r['risk_status'] }}">{{ t_status(r['risk_status']) }}</span></td>
+            <td>{{ t('yes') if r['verified_by_officer'] else t('no') }}</td>
+            <td>{{ t('yes') if r['notified_ngo'] else t('no') }}</td>
+            <td><a href="{{ url_for('officer_view_report', report_id=r['id']) }}">{{ t('review') }}</a></td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% endif %}
+{% endblock %}

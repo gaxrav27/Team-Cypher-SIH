@@ -1,0 +1,259 @@
+{% extends "base.html" %}
+{% block title %}Wardha Crop Advisory{% endblock %}
+
+{% block head %}
+<script>
+  const LANG = '{{ current_lang }}';
+
+  // Devanagari numeral conversion
+  const DEV_DIGITS = {'0':'०','1':'१','2':'२','3':'३','4':'४','5':'५','6':'६','7':'७','8':'८','9':'९'};
+  function num(s) {
+    if (LANG === 'en') return String(s);
+    return String(s).replace(/[0-9]/g, d => DEV_DIGITS[d] || d);
+  }
+
+  const W = {
+    en: { humidity: "Humidity", wind: "Wind", precip: "Precipitation", feels: "Feels Like",
+          maxWind: "Max Wind", totalRain: "Total Rain", tempRange: "Temp Range", rain: "Rain:",
+          loading: "Fetching live weather data for Wardha...", error: "Unable to fetch live weather data. Check your connection." },
+    hi: { humidity: "नमी", wind: "हवा", precip: "वर्षा", feels: "अनुभव",
+          maxWind: "अधिकतम हवा", totalRain: "कुल वर्षा", tempRange: "तापमान", rain: "वर्षा:",
+          loading: "वर्धा का मौसम डेटा लोड हो रहा है...", error: "मौसम डेटा लोड नहीं हो सका। अपना कनेक्शन जांचें।" },
+    mr: { humidity: "ओलावा", wind: "वारा", precip: "पाऊस", feels: "अनुभव",
+          maxWind: "जास्तीत जास्त वारा", totalRain: "एकूण पाऊस", tempRange: "तापमान", rain: "पाऊस:",
+          loading: "वर्धा चे हवामान डेटा लोड होत आहे...", error: "हवामान डेटा लोड होऊ शकला नाही. तुमचे कनेक्शन तपासा." }
+  };
+  function w(key) { return (W[LANG] && W[LANG][key]) || W.en[key]; }
+
+  let weatherData = null;
+
+  function getIcon(code) {
+    const c = parseInt(code);
+    if (c >= 200 && c <= 228) return 'Storm';
+    if (c >= 266 && c <= 314) return 'Rain';
+    if (c >= 317 && c <= 395) return 'Snow';
+    if (c >= 176 && c <= 263) return 'Light Rain';
+    if (c >= 148 && c <= 175) return 'Cloudy';
+    if (c >= 119 && c <= 143) return 'Fog';
+    return 'Clear';
+  }
+
+  function getRainIcon(mm) { return mm > 5 ? 'Heavy Rain' : mm > 1 ? 'Light Rain' : 'Clear'; }
+
+  function formatDate(dateStr) {
+    const locale = LANG === 'hi' ? 'hi-IN' : LANG === 'mr' ? 'mr-IN' : 'en-IN';
+    try { return new Date(dateStr).toLocaleDateString(locale, { weekday: 'short', month: 'short', day: 'numeric' }); }
+    catch(e) { return new Date(dateStr).toLocaleDateString('en-IN', { weekday: 'short', month: 'short', day: 'numeric' }); }
+  }
+
+  function renderCurrent(data) {
+    const cur = data.current_condition[0];
+    return `
+      <div class="weather-main">
+        <div class="weather-icon">${getIcon(cur.weatherCode)}</div>
+        <div>
+          <span class="weather-temp">${num(cur.temp_C)}°C</span>
+          <span class="weather-desc">${cur.weatherDesc[0].value}</span>
+        </div>
+      </div>
+      <div class="weather-details">
+        <div><span class="weather-label">${w('humidity')}</span><span class="weather-val">${num(cur.humidity)}%</span></div>
+        <div><span class="weather-label">${w('wind')}</span><span class="weather-val">${num(cur.windspeedKmph)} km/h</span></div>
+        <div><span class="weather-label">${w('precip')}</span><span class="weather-val">${num(cur.precipMM)} mm</span></div>
+        <div><span class="weather-label">${w('feels')}</span><span class="weather-val">${num(cur.FeelsLikeC)}°C</span></div>
+      </div>`;
+  }
+
+  function renderForecast(days, count) {
+    return `<div class="weather-forecast" style="grid-template-columns: repeat(${Math.min(count, 4)}, 1fr);">
+      ${days.slice(0, count).map(d => {
+        const rain = d.hourly.reduce((a,h) => a + parseFloat(h.precipMM), 0).toFixed(1);
+        return `
+        <div class="forecast-day">
+          <div class="forecast-icon">${getRainIcon(parseFloat(rain))}</div>
+          <div class="forecast-date">${formatDate(d.date)}</div>
+          <div class="forecast-temp">${num(d.mintempC)}° — ${num(d.maxtempC)}°</div>
+          <div class="forecast-rain">${w('rain')} ${num(rain)} mm</div>
+        </div>`;
+      }).join('')}
+    </div>`;
+  }
+
+  function showView(view, btn) {
+    const el = document.getElementById('weather-data');
+    if (!weatherData) return;
+    document.querySelectorAll('.weather-tab').forEach(t => t.classList.remove('active'));
+    btn.classList.add('active');
+
+    let html = '';
+    if (view === 'today') {
+      html = renderCurrent(weatherData) + renderForecast(weatherData.weather, 3);
+    } else if (view === 'tomorrow') {
+      const tm = weatherData.weather[1];
+      if (tm) {
+        const rain = tm.hourly.reduce((a,h) => a + parseFloat(h.precipMM), 0).toFixed(1);
+        const avgHum = Math.round(tm.hourly.reduce((a,h) => a + parseInt(h.humidity), 0) / tm.hourly.length);
+        const maxWind = Math.max(...tm.hourly.map(h => parseInt(h.windspeedKmph)));
+        const desc = tm.hourly[4]?.weatherDesc[0]?.value || 'N/A';
+        html = `
+          <div class="weather-main">
+            <div class="weather-icon">${getRainIcon(parseFloat(rain))}</div>
+            <div>
+              <span class="weather-temp">${num(tm.avgtempC)}°C</span>
+              <span class="weather-desc">${desc} — ${formatDate(tm.date)}</span>
+            </div>
+          </div>
+          <div class="weather-details">
+            <div><span class="weather-label">${w('humidity')}</span><span class="weather-val">${num(avgHum)}%</span></div>
+            <div><span class="weather-label">${w('maxWind')}</span><span class="weather-val">${num(maxWind)} km/h</span></div>
+            <div><span class="weather-label">${w('totalRain')}</span><span class="weather-val">${num(rain)} mm</span></div>
+            <div><span class="weather-label">${w('tempRange')}</span><span class="weather-val">${num(tm.mintempC)}° — ${num(tm.maxtempC)}°</span></div>
+          </div>`;
+      }
+    } else if (view === '3day') {
+      html = renderCurrent(weatherData) + renderForecast(weatherData.weather, 3);
+    } else if (view === '7day') {
+      html = renderForecast(weatherData.weather, 7);
+    }
+    el.innerHTML = html;
+  }
+
+  async function fetchWeather() {
+    const el = document.getElementById('weather-data');
+    try {
+      const res = await fetch('https://wttr.in/Wardha?format=j1');
+      weatherData = await res.json();
+      el.innerHTML = renderCurrent(weatherData) + renderForecast(weatherData.weather, 3);
+    } catch (e) {
+      el.innerHTML = `<p class="weather-error">${w('error')}</p>`;
+    }
+  }
+  document.addEventListener('DOMContentLoaded', fetchWeather);
+</script>
+{% endblock %}
+
+{% block content %}
+<!-- Hero Section -->
+<div class="hero-new">
+  <div class="hero-badge">{{ t('hero_badge') }}</div>
+  <h1>{{ t('home_title') }}</h1>
+  <p class="hero-sub">{{ t('home_subtitle') }}</p>
+  <div class="hero-actions">
+    <a href="{{ url_for('login', role='farmer') }}" class="btn btn-amber btn-large">{{ t('hero_btn_farmer') }}</a>
+    <a href="{{ url_for('login', role='officer') }}" class="btn btn-large btn-officer-hero">{{ t('hero_btn_officer') }}</a>
+  </div>
+</div>
+
+<!-- Weather -->
+<section class="section">
+  <div class="section-header">
+    <h2 class="section-title">{{ t('weather_title') }}</h2>
+    <p class="section-sub">{{ t('weather_sub') }}</p>
+  </div>
+  <div class="weather-card">
+    <div class="weather-tabs">
+      <button class="weather-tab active" onclick="showView('today', this)">{{ t('weather_tab_today') }}</button>
+      <button class="weather-tab" onclick="showView('tomorrow', this)">{{ t('weather_tab_tomorrow') }}</button>
+      <button class="weather-tab" onclick="showView('3day', this)">{{ t('weather_tab_3day') }}</button>
+      <button class="weather-tab" onclick="showView('7day', this)">{{ t('weather_tab_7day') }}</button>
+    </div>
+    <div id="weather-data">
+      <div class="weather-loading">
+        <div class="loading-spinner"></div>
+        <span>{{ t('weather_loading') }}</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- Mandi Prices -->
+<section class="section">
+  <div class="section-header">
+    <h2 class="section-title">{{ t('mandi_title') }}</h2>
+    <p class="section-sub">{{ t('mandi_sub') }}</p>
+  </div>
+  <div class="table-wrap">
+    <table class="table mandi-table">
+      <thead>
+        <tr>
+          <th>{{ t('mandi_commodity') }}</th>
+          <th>{{ t('mandi_variety') }}</th>
+          <th>{{ t('mandi_min') }}</th>
+          <th>{{ t('mandi_max') }}</th>
+          <th>{{ t('mandi_modal') }}</th>
+          <th>{{ t('mandi_avg') }}</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for crop, prices in mandi_prices.items() %}
+        <tr>
+          <td><strong>{{ t_crop(crop) }}</strong></td>
+          <td class="subtle">{{ t_variety(crop_varieties[crop]) }}</td>
+          <td>₹{{ num("{:,}".format(prices.min)) }}</td>
+          <td>₹{{ num("{:,}".format(prices.max)) }}</td>
+          <td><span class="modal-price">₹{{ num("{:,}".format(prices.modal)) }}</span></td>
+          <td>₹{{ num("%.2f"|format(prices.modal / 100)) }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- Sub-Mandi -->
+<section class="section">
+  <div class="section-header">
+    <h2 class="section-title">{{ t('submandi_title') }}</h2>
+    <p class="section-sub">{{ t('submandi_sub') }}</p>
+  </div>
+  <div class="sub-mandi-grid">
+    {% for mandi in sub_mandis %}
+    <div class="sub-mandi-card">
+      <div class="sub-mandi-icon"></div>
+      <h3>{{ mandi.name }}</h3>          <p class="sub-mandi-commodities">{{ t_submandi(mandi.commodities) }}</p>
+      <p class="sub-mandi-range">{{ mandi.price_range }}</p>
+    </div>
+    {% endfor %}
+  </div>
+</section>
+
+<!-- Rainfall -->
+<section class="section">
+  <div class="section-header">
+    <h2 class="section-title">{{ t('rainfall_title') }}</h2>
+    <p class="section-sub">{{ t('rainfall_sub') }}</p>
+  </div>
+  <div class="rainfall-chart">
+    {% for month, data in rainfall_data.items() %}
+    <div class="rainfall-bar-group">
+      <div class="rainfall-label">{{ t_month_abbr(month) }}</div>
+      <div class="rainfall-bars">
+        <div class="bar bar-actual" style="height: {{ (data.actual_mm / 360 * 140)|int }}px;" title="Actual: {{ data.actual_mm }}mm">
+          <span class="bar-val">{{ num(data.actual_mm) }}</span>
+        </div>
+        <div class="bar bar-normal" style="height: {{ (data.normal_mm / 360 * 140)|int }}px;" title="Normal: {{ data.normal_mm }}mm">
+          <span class="bar-val">{{ num(data.normal_mm) }}</span>
+        </div>
+      </div>
+      <div class="rainfall-pct {% if data.pct_of_normal >= 100 %}pct-good{% elif data.pct_of_normal >= 70 %}pct-warn{% else %}pct-low{% endif %}">
+        {{ num(data.pct_of_normal|int) }}%
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+  <div class="rainfall-legend">
+    <span class="legend-item"><span class="legend-dot bar-actual"></span> {{ t('rainfall_actual') }}</span>
+    <span class="legend-item"><span class="legend-dot bar-normal"></span> {{ t('rainfall_normal') }}</span>
+  </div>
+</section>
+
+<!-- Stats -->
+<section class="section">
+  <div class="stats-bar">
+    <div class="stat-item"><div class="stat-number">{{ num(8) }}</div><div class="stat-label">{{ t('stat_crops') }}</div></div>
+    <div class="stat-item"><div class="stat-number">{{ num(4) }}</div><div class="stat-label">{{ t('stat_markets') }}</div></div>
+    <div class="stat-item"><div class="stat-number">{{ num('886') }}mm</div><div class="stat-label">{{ t('stat_rainfall') }}</div></div>
+    <div class="stat-item"><div class="stat-number">{{ num(3) }}</div><div class="stat-label">{{ t('stat_languages') }}</div></div>
+  </div>
+</section>
+{% endblock %}
